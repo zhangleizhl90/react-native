@@ -1,143 +1,162 @@
 /**
- * Copyright (c) 2015-present, Facebook, Inc.
- * All rights reserved.
+ * Copyright (c) Facebook, Inc. and its affiliates.
  *
- * This source code is licensed under the BSD-style license found in the
- * LICENSE file in the root directory of this source tree. An additional grant
- * of patent rights can be found in the PATENTS file in the same directory.
+ * This source code is licensed under the MIT license found in the
+ * LICENSE file in the root directory of this source tree.
  *
- * @providesModule TouchableWithoutFeedback
- * @flow
+ * @flow strict-local
+ * @format
  */
+
 'use strict';
 
-var React = require('React');
-var TimerMixin = require('react-timer-mixin');
-var Touchable = require('Touchable');
-var View = require('View');
-var ensurePositiveDelayProps = require('ensurePositiveDelayProps');
-var onlyChild = require('onlyChild');
+import Pressability, {
+  type PressabilityConfig,
+} from '../../Pressability/Pressability';
+import {PressabilityDebugView} from '../../Pressability/PressabilityDebug';
+import type {
+  AccessibilityActionEvent,
+  AccessibilityActionInfo,
+  AccessibilityRole,
+  AccessibilityState,
+  AccessibilityValue,
+} from '../../Components/View/ViewAccessibility';
+import type {EdgeInsetsProp} from '../../StyleSheet/EdgeInsetsPropType';
+import type {
+  BlurEvent,
+  FocusEvent,
+  LayoutEvent,
+  PressEvent,
+} from '../../Types/CoreEventTypes';
+import View from '../../Components/View/View';
+import * as React from 'react';
 
-type Event = Object;
+type Props = $ReadOnly<{|
+  accessibilityActions?: ?$ReadOnlyArray<AccessibilityActionInfo>,
+  accessibilityElementsHidden?: ?boolean,
+  accessibilityHint?: ?Stringish,
+  accessibilityIgnoresInvertColors?: ?boolean,
+  accessibilityLabel?: ?Stringish,
+  accessibilityLiveRegion?: ?('none' | 'polite' | 'assertive'),
+  accessibilityRole?: ?AccessibilityRole,
+  accessibilityState?: ?AccessibilityState,
+  accessibilityValue?: ?AccessibilityValue,
+  accessibilityViewIsModal?: ?boolean,
+  accessible?: ?boolean,
+  children?: ?React.Node,
+  delayLongPress?: ?number,
+  delayPressIn?: ?number,
+  delayPressOut?: ?number,
+  disabled?: ?boolean,
+  focusable?: ?boolean,
+  hitSlop?: ?EdgeInsetsProp,
+  importantForAccessibility?: ?('auto' | 'yes' | 'no' | 'no-hide-descendants'),
+  nativeID?: ?string,
+  onAccessibilityAction?: ?(event: AccessibilityActionEvent) => mixed,
+  onBlur?: ?(event: BlurEvent) => mixed,
+  onFocus?: ?(event: FocusEvent) => mixed,
+  onLayout?: ?(event: LayoutEvent) => mixed,
+  onLongPress?: ?(event: PressEvent) => mixed,
+  onPress?: ?(event: PressEvent) => mixed,
+  onPressIn?: ?(event: PressEvent) => mixed,
+  onPressOut?: ?(event: PressEvent) => mixed,
+  pressRetentionOffset?: ?EdgeInsetsProp,
+  rejectResponderTermination?: ?boolean,
+  testID?: ?string,
+  touchSoundDisabled?: ?boolean,
+|}>;
 
-/**
- * When the scroll view is disabled, this defines how far your touch may move
- * off of the button, before deactivating the button. Once deactivated, try
- * moving it back and you'll see that the button is once again reactivated!
- * Move it back and forth several times while the scroll view is disabled.
- */
-var PRESS_RECT_OFFSET = {top: 20, left: 20, right: 20, bottom: 30};
+type State = $ReadOnly<{|
+  pressability: Pressability,
+|}>;
 
-/**
- * Do not use unless you have a very good reason. All the elements that
- * respond to press should have a visual feedback when touched. This is
- * one of the primary reason a "web" app doesn't feel "native".
- */
-var TouchableWithoutFeedback = React.createClass({
-  mixins: [TimerMixin, Touchable.Mixin],
+const PASSTHROUGH_PROPS = [
+  'accessibilityActions',
+  'accessibilityElementsHidden',
+  'accessibilityHint',
+  'accessibilityIgnoresInvertColors',
+  'accessibilityLabel',
+  'accessibilityLiveRegion',
+  'accessibilityRole',
+  'accessibilityState',
+  'accessibilityValue',
+  'accessibilityViewIsModal',
+  'hitSlop',
+  'importantForAccessibility',
+  'nativeID',
+  'onAccessibilityAction',
+  'onBlur',
+  'onFocus',
+  'onLayout',
+  'testID',
+];
 
-  propTypes: {
-    accessible: React.PropTypes.bool,
-    accessibilityComponentType: React.PropTypes.oneOf(View.AccessibilityComponentType),
-    accessibilityTraits: React.PropTypes.oneOfType([
-      React.PropTypes.oneOf(View.AccessibilityTraits),
-      React.PropTypes.arrayOf(React.PropTypes.oneOf(View.AccessibilityTraits)),
-    ]),
-    /**
-     * Called when the touch is released, but not if cancelled (e.g. by a scroll
-     * that steals the responder lock).
-     */
-    onPress: React.PropTypes.func,
-    onPressIn: React.PropTypes.func,
-    onPressOut: React.PropTypes.func,
-    /**
-     * Invoked on mount and layout changes with
-     *
-     *   `{nativeEvent: {layout: {x, y, width, height}}}`
-     */
-    onLayout: React.PropTypes.func,
+class TouchableWithoutFeedback extends React.Component<Props, State> {
+  state: State = {
+    pressability: new Pressability(createPressabilityConfig(this.props)),
+  };
 
-    onLongPress: React.PropTypes.func,
+  render(): React.Node {
+    const element = React.Children.only(this.props.children);
+    const children = [element.props.children];
+    if (__DEV__) {
+      if (element.type === View) {
+        children.push(
+          <PressabilityDebugView color="red" hitSlop={this.props.hitSlop} />,
+        );
+      }
+    }
 
-    /**
-     * Delay in ms, from the start of the touch, before onPressIn is called.
-     */
-    delayPressIn: React.PropTypes.number,
-    /**
-     * Delay in ms, from the release of the touch, before onPressOut is called.
-     */
-    delayPressOut: React.PropTypes.number,
-    /**
-     * Delay in ms, from onPressIn, before onLongPress is called.
-     */
-    delayLongPress: React.PropTypes.number,
-  },
+    // BACKWARD-COMPATIBILITY: Focus and blur events were never supported before
+    // adopting `Pressability`, so preserve that behavior.
+    const {
+      onBlur,
+      onFocus,
+      ...eventHandlersWithoutBlurAndFocus
+    } = this.state.pressability.getEventHandlers();
 
-  getInitialState: function() {
-    return this.touchableGetInitialState();
-  },
-
-  componentDidMount: function() {
-    ensurePositiveDelayProps(this.props);
-  },
-
-  componentWillReceiveProps: function(nextProps: Object) {
-    ensurePositiveDelayProps(nextProps);
-  },
-
-  /**
-   * `Touchable.Mixin` self callbacks. The mixin will invoke these if they are
-   * defined on your component.
-   */
-  touchableHandlePress: function(e: Event) {
-    this.props.onPress && this.props.onPress(e);
-  },
-
-  touchableHandleActivePressIn: function(e: Event) {
-    this.props.onPressIn && this.props.onPressIn(e);
-  },
-
-  touchableHandleActivePressOut: function(e: Event) {
-    this.props.onPressOut && this.props.onPressOut(e);
-  },
-
-  touchableHandleLongPress: function(e: Event) {
-    this.props.onLongPress && this.props.onLongPress(e);
-  },
-
-  touchableGetPressRectOffset: function(): typeof PRESS_RECT_OFFSET {
-    return PRESS_RECT_OFFSET;   // Always make sure to predeclare a constant!
-  },
-
-  touchableGetHighlightDelayMS: function(): number {
-    return this.props.delayPressIn || 0;
-  },
-
-  touchableGetLongPressDelayMS: function(): number {
-    return this.props.delayLongPress === 0 ? 0 :
-      this.props.delayLongPress || 500;
-  },
-
-  touchableGetPressOutDelayMS: function(): number {
-    return this.props.delayPressOut || 0;
-  },
-
-  render: function(): ReactElement {
-    // Note(avik): remove dynamic typecast once Flow has been upgraded
-    return (React: any).cloneElement(onlyChild(this.props.children), {
+    const elementProps: {[string]: mixed, ...} = {
+      ...eventHandlersWithoutBlurAndFocus,
       accessible: this.props.accessible !== false,
-      accessibilityComponentType: this.props.accessibilityComponentType,
-      accessibilityTraits: this.props.accessibilityTraits,
-      testID: this.props.testID,
-      onLayout: this.props.onLayout,
-      onStartShouldSetResponder: this.touchableHandleStartShouldSetResponder,
-      onResponderTerminationRequest: this.touchableHandleResponderTerminationRequest,
-      onResponderGrant: this.touchableHandleResponderGrant,
-      onResponderMove: this.touchableHandleResponderMove,
-      onResponderRelease: this.touchableHandleResponderRelease,
-      onResponderTerminate: this.touchableHandleResponderTerminate
-    });
+      focusable:
+        this.props.focusable !== false && this.props.onPress !== undefined,
+    };
+    for (const prop of PASSTHROUGH_PROPS) {
+      if (this.props[prop] !== undefined) {
+        elementProps[prop] = this.props[prop];
+      }
+    }
+
+    return React.cloneElement(element, elementProps, ...children);
   }
-});
+
+  componentDidUpdate(): void {
+    this.state.pressability.configure(createPressabilityConfig(this.props));
+  }
+
+  componentWillUnmount(): void {
+    this.state.pressability.reset();
+  }
+}
+
+function createPressabilityConfig(props: Props): PressabilityConfig {
+  return {
+    cancelable: !props.rejectResponderTermination,
+    disabled: props.disabled,
+    hitSlop: props.hitSlop,
+    delayLongPress: props.delayLongPress,
+    delayPressIn: props.delayPressIn,
+    delayPressOut: props.delayPressOut,
+    minPressDuration: 0,
+    pressRectOffset: props.pressRetentionOffset,
+    android_disableSound: props.touchSoundDisabled,
+    onBlur: props.onBlur,
+    onFocus: props.onFocus,
+    onLongPress: props.onLongPress,
+    onPress: props.onPress,
+    onPressIn: props.onPressIn,
+    onPressOut: props.onPressOut,
+  };
+}
 
 module.exports = TouchableWithoutFeedback;

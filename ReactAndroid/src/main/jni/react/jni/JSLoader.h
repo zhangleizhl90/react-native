@@ -1,21 +1,34 @@
-// Copyright 2004-present Facebook. All Rights Reserved.
+/*
+ * Copyright (c) Facebook, Inc. and its affiliates.
+ *
+ * This source code is licensed under the MIT license found in the
+ * LICENSE file in the root directory of this source tree.
+ */
 
 #pragma once
 
 #include <string>
-#include <jni.h>
+
+#include <android/asset_manager.h>
+#include <cxxreact/JSExecutor.h>
+#include <fbjni/fbjni.h>
 
 namespace facebook {
 namespace react {
 
+struct JAssetManager : jni::JavaClass<JAssetManager> {
+  static constexpr auto kJavaDescriptor = "Landroid/content/res/AssetManager;";
+};
+
 /**
  * Helper method for loading JS script from android asset
  */
-std::string loadScriptFromAssets(JNIEnv *env, jobject assetManager, std::string assetName);
+AAssetManager *extractAssetManager(
+    jni::alias_ref<JAssetManager::javaobject> assetManager);
 
-/**
- * Helper method for loading JS script from a file
- */
-std::string loadScriptFromFile(std::string fileName);
+std::unique_ptr<const JSBigString> loadScriptFromAssets(
+    AAssetManager *assetManager,
+    const std::string &assetName);
 
-} }
+} // namespace react
+} // namespace facebook

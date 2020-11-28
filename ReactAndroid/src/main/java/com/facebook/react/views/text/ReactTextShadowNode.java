@@ -1,407 +1,354 @@
-/**
- * Copyright (c) 2015-present, Facebook, Inc.
- * All rights reserved.
+/*
+ * Copyright (c) Facebook, Inc. and its affiliates.
  *
- * This source code is licensed under the BSD-style license found in the
- * LICENSE file in the root directory of this source tree. An additional grant
- * of patent rights can be found in the PATENTS file in the same directory.
+ * This source code is licensed under the MIT license found in the
+ * LICENSE file in the root directory of this source tree.
  */
 
 package com.facebook.react.views.text;
 
-import javax.annotation.Nullable;
-
-import java.util.ArrayList;
-import java.util.List;
-
-import android.graphics.Typeface;
+import android.annotation.TargetApi;
+import android.os.Build;
 import android.text.BoringLayout;
 import android.text.Layout;
 import android.text.Spannable;
-import android.text.SpannableStringBuilder;
 import android.text.Spanned;
 import android.text.StaticLayout;
 import android.text.TextPaint;
-import android.text.style.AbsoluteSizeSpan;
-import android.text.style.BackgroundColorSpan;
-import android.text.style.ForegroundColorSpan;
+import android.view.Gravity;
 import android.widget.TextView;
-
-import com.facebook.csslayout.CSSConstants;
-import com.facebook.csslayout.CSSNode;
-import com.facebook.csslayout.MeasureOutput;
+import androidx.annotation.Nullable;
 import com.facebook.infer.annotation.Assertions;
-import com.facebook.react.common.annotations.VisibleForTesting;
-import com.facebook.react.uimanager.IllegalViewOperationException;
-import com.facebook.react.uimanager.LayoutShadowNode;
+import com.facebook.react.bridge.Arguments;
+import com.facebook.react.bridge.ReactNoCrashSoftException;
+import com.facebook.react.bridge.ReactSoftException;
+import com.facebook.react.bridge.WritableArray;
+import com.facebook.react.bridge.WritableMap;
+import com.facebook.react.uimanager.NativeViewHierarchyOptimizer;
 import com.facebook.react.uimanager.PixelUtil;
-import com.facebook.react.uimanager.ReactProp;
 import com.facebook.react.uimanager.ReactShadowNode;
+import com.facebook.react.uimanager.Spacing;
+import com.facebook.react.uimanager.ThemedReactContext;
 import com.facebook.react.uimanager.UIViewOperationQueue;
-import com.facebook.react.uimanager.ViewDefaults;
-import com.facebook.react.uimanager.ViewProps;
+import com.facebook.react.uimanager.annotations.ReactProp;
+import com.facebook.react.uimanager.events.RCTEventEmitter;
+import com.facebook.yoga.YogaConstants;
+import com.facebook.yoga.YogaDirection;
+import com.facebook.yoga.YogaMeasureFunction;
+import com.facebook.yoga.YogaMeasureMode;
+import com.facebook.yoga.YogaMeasureOutput;
+import com.facebook.yoga.YogaNode;
+import java.util.ArrayList;
 
 /**
- * {@link ReactShadowNode} class for spannable text view.
+ * {@link ReactBaseTextShadowNode} concrete class for anchor {@code Text} node.
  *
- * This node calculates {@link Spannable} based on subnodes of the same type and passes the
- * resulting object down to textview's shadowview and actual native {@link TextView} instance.
- * It is important to keep in mind that {@link Spannable} is calculated only on layout step, so if
- * there are any text properties that may/should affect the result of {@link Spannable} they should
- * be set in a corresponding {@link ReactTextShadowNode}. Resulting {@link Spannable} object is then
- * then passed as "computedDataFromMeasure" down to shadow and native view.
- *
- * TODO(7255858): Rename *CSSNode to *ShadowView (or sth similar) as it's no longer is used
- * solely for layouting
+ * <p>The class measures text in {@code <Text>} view and feeds native {@link TextView} using {@code
+ * Spannable} object constructed in superclass.
  */
-public class ReactTextShadowNode extends LayoutShadowNode {
+@TargetApi(Build.VERSION_CODES.M)
+public class ReactTextShadowNode extends ReactBaseTextShadowNode {
 
-  public static final int UNSET = -1;
+  // It's important to pass the ANTI_ALIAS_FLAG flag to the constructor rather than setting it
+  // later by calling setFlags. This is because the latter approach triggers a bug on Android 4.4.2.
+  // The bug is that unicode emoticons aren't measured properly which causes text to be clipped.
+  private static final TextPaint sTextPaintInstance = new TextPaint(TextPaint.ANTI_ALIAS_FLAG);
 
-  @VisibleForTesting
-  public static final String PROP_TEXT = "text";
+  private @Nullable Spannable mPreparedSpannableText;
 
-  private static final TextPaint sTextPaintInstance = new TextPaint();
+  private boolean mShouldNotifyOnTextLayout;
 
-  static {
-    sTextPaintInstance.setFlags(TextPaint.ANTI_ALIAS_FLAG);
-  }
-
-  private static class SetSpanOperation {
-    protected int start, end;
-    protected Object what;
-    SetSpanOperation(int start, int end, Object what) {
-      this.start = start;
-      this.end = end;
-      this.what = what;
-    }
-    public void execute(SpannableStringBuilder sb) {
-      // All spans will automatically extend to the right of the text, but not the left - except
-      // for spans that start at the beginning of the text.
-      int spanFlags = Spannable.SPAN_EXCLUSIVE_INCLUSIVE;
-      if (start == 0) {
-        spanFlags = Spannable.SPAN_INCLUSIVE_INCLUSIVE;
-      }
-      sb.setSpan(what, start, end, spanFlags);
-    }
-  }
-
-  private static final void buildSpannedFromTextCSSNode(
-      ReactTextShadowNode textCSSNode,
-      SpannableStringBuilder sb,
-      List<SetSpanOperation> ops) {
-    int start = sb.length();
-    if (textCSSNode.mText != null) {
-      sb.append(textCSSNode.mText);
-    }
-    for (int i = 0, length = textCSSNode.getChildCount(); i < length; i++) {
-      CSSNode child = textCSSNode.getChildAt(i);
-      if (child instanceof ReactTextShadowNode) {
-        buildSpannedFromTextCSSNode((ReactTextShadowNode) child, sb, ops);
-      } else {
-        throw new IllegalViewOperationException("Unexpected view type nested under text node: "
-            + child.getClass());
-      }
-      ((ReactTextShadowNode) child).markUpdateSeen();
-    }
-    int end = sb.length();
-    if (end > start) {
-      if (textCSSNode.mIsColorSet) {
-        ops.add(new SetSpanOperation(start, end, new ForegroundColorSpan(textCSSNode.mColor)));
-      }
-      if (textCSSNode.mIsBackgroundColorSet) {
-        ops.add(
-            new SetSpanOperation(
-                start,
-                end,
-                new BackgroundColorSpan(textCSSNode.mBackgroundColor)));
-      }
-      if (textCSSNode.mFontSize != UNSET) {
-        ops.add(new SetSpanOperation(start, end, new AbsoluteSizeSpan(textCSSNode.mFontSize)));
-      }
-      if (textCSSNode.mFontStyle != UNSET ||
-          textCSSNode.mFontWeight != UNSET ||
-          textCSSNode.mFontFamily != null) {
-        ops.add(new SetSpanOperation(
-                start,
-                end,
-                new CustomStyleSpan(
-                    textCSSNode.mFontStyle,
-                    textCSSNode.mFontWeight,
-                    textCSSNode.mFontFamily)));
-      }
-      ops.add(new SetSpanOperation(start, end, new ReactTagSpan(textCSSNode.getReactTag())));
-    }
-  }
-
-  protected static final Spanned fromTextCSSNode(ReactTextShadowNode textCSSNode) {
-    SpannableStringBuilder sb = new SpannableStringBuilder();
-    // TODO(5837930): Investigate whether it's worth optimizing this part and do it if so
-
-    // The {@link SpannableStringBuilder} implementation require setSpan operation to be called
-    // up-to-bottom, otherwise all the spannables that are withing the region for which one may set
-    // a new spannable will be wiped out
-    List<SetSpanOperation> ops = new ArrayList<SetSpanOperation>();
-    buildSpannedFromTextCSSNode(textCSSNode, sb, ops);
-    if (textCSSNode.mFontSize == UNSET) {
-      sb.setSpan(
-          new AbsoluteSizeSpan((int) Math.ceil(PixelUtil.toPixelFromSP(ViewDefaults.FONT_SIZE_SP))),
-          0,
-          sb.length(),
-          Spannable.SPAN_INCLUSIVE_EXCLUSIVE);
-    }
-    for (int i = ops.size() - 1; i >= 0; i--) {
-      SetSpanOperation op = ops.get(i);
-      op.execute(sb);
-    }
-    return sb;
-  }
-
-  private static final CSSNode.MeasureFunction TEXT_MEASURE_FUNCTION =
-      new CSSNode.MeasureFunction() {
+  private final YogaMeasureFunction mTextMeasureFunction =
+      new YogaMeasureFunction() {
         @Override
-        public void measure(CSSNode node, float width, MeasureOutput measureOutput) {
-          // TODO(5578671): Handle text direction (see View#getTextDirectionHeuristic)
-          ReactTextShadowNode reactCSSNode = (ReactTextShadowNode) node;
-          TextPaint textPaint = sTextPaintInstance;
-          Layout layout;
-          Spanned text = Assertions.assertNotNull(
-              reactCSSNode.mPreparedSpannedText,
-              "Spannable element has not been prepared in onBeforeLayout");
-          BoringLayout.Metrics boring = BoringLayout.isBoring(text, textPaint);
-          float desiredWidth = boring == null ?
-              Layout.getDesiredWidth(text, textPaint) : Float.NaN;
+        public long measure(
+            YogaNode node,
+            float width,
+            YogaMeasureMode widthMode,
+            float height,
+            YogaMeasureMode heightMode) {
+          Spannable text =
+              Assertions.assertNotNull(
+                  mPreparedSpannableText,
+                  "Spannable element has not been prepared in onBeforeLayout");
 
-          if (boring == null &&
-              (CSSConstants.isUndefined(width) ||
-                  (!CSSConstants.isUndefined(desiredWidth) && desiredWidth <= width))) {
-            // Is used when the width is not known and the text is not boring, ie. if it contains
-            // unicode characters.
-            layout = new StaticLayout(
-                text,
-                textPaint,
-                (int) Math.ceil(desiredWidth),
-                Layout.Alignment.ALIGN_NORMAL,
-                1,
-                0,
-                true);
-          } else if (boring != null && (CSSConstants.isUndefined(width) || boring.width <= width)) {
-            // Is used for single-line, boring text when the width is either unknown or bigger
-            // than the width of the text.
-            layout = BoringLayout.make(
-                text,
-                textPaint,
-                boring.width,
-                Layout.Alignment.ALIGN_NORMAL,
-                1,
-                0,
-                boring,
-                true);
-          } else  {
-            // Is used for multiline, boring text and the width is known.
-            layout = new StaticLayout(
-                text,
-                textPaint,
-                (int) width,
-                Layout.Alignment.ALIGN_NORMAL,
-                1,
-                0,
-                true);
+          Layout layout = measureSpannedText(text, width, widthMode);
+
+          if (mAdjustsFontSizeToFit) {
+            int initialFontSize = mTextAttributes.getEffectiveFontSize();
+            int currentFontSize = mTextAttributes.getEffectiveFontSize();
+            // Minimum font size is 4pts to match the iOS implementation.
+            int minimumFontSize =
+                (int) Math.max(mMinimumFontScale * initialFontSize, PixelUtil.toPixelFromDIP(4));
+            while (currentFontSize > minimumFontSize
+                && (mNumberOfLines != UNSET && layout.getLineCount() > mNumberOfLines
+                    || heightMode != YogaMeasureMode.UNDEFINED && layout.getHeight() > height)) {
+              // TODO: We could probably use a smarter algorithm here. This will require 0(n)
+              // measurements
+              // based on the number of points the font size needs to be reduced by.
+              currentFontSize = currentFontSize - (int) PixelUtil.toPixelFromDIP(1);
+
+              float ratio = (float) currentFontSize / (float) initialFontSize;
+              ReactAbsoluteSizeSpan[] sizeSpans =
+                  text.getSpans(0, text.length(), ReactAbsoluteSizeSpan.class);
+              for (ReactAbsoluteSizeSpan span : sizeSpans) {
+                text.setSpan(
+                    new ReactAbsoluteSizeSpan(
+                        (int) Math.max((span.getSize() * ratio), minimumFontSize)),
+                    text.getSpanStart(span),
+                    text.getSpanEnd(span),
+                    text.getSpanFlags(span));
+                text.removeSpan(span);
+              }
+              layout = measureSpannedText(text, width, widthMode);
+            }
           }
 
-          measureOutput.height = layout.getHeight();
-          measureOutput.width = layout.getWidth();
-          if (reactCSSNode.mNumberOfLines != UNSET &&
-              reactCSSNode.mNumberOfLines < layout.getLineCount()) {
-            measureOutput.height = layout.getLineBottom(reactCSSNode.mNumberOfLines - 1);
+          if (mShouldNotifyOnTextLayout) {
+            ThemedReactContext themedReactContext = getThemedContext();
+            WritableArray lines =
+                FontMetricsUtil.getFontMetrics(
+                    text, layout, sTextPaintInstance, themedReactContext);
+            WritableMap event = Arguments.createMap();
+            event.putArray("lines", lines);
+            if (themedReactContext.hasActiveCatalystInstance()) {
+              themedReactContext
+                  .getJSModule(RCTEventEmitter.class)
+                  .receiveEvent(getReactTag(), "topTextLayout", event);
+            } else {
+              ReactSoftException.logSoftException(
+                  "ReactTextShadowNode",
+                  new ReactNoCrashSoftException("Cannot get RCTEventEmitter, no CatalystInstance"));
+            }
           }
-          if (reactCSSNode.mLineHeight != UNSET) {
-            int lines = reactCSSNode.mNumberOfLines != UNSET
-                ? Math.min(reactCSSNode.mNumberOfLines, layout.getLineCount())
-                : layout.getLineCount();
-            float lineHeight = PixelUtil.toPixelFromSP(reactCSSNode.mLineHeight);
-            measureOutput.height = lineHeight * lines;
+
+          final int lineCount =
+              mNumberOfLines == UNSET
+                  ? layout.getLineCount()
+                  : Math.min(mNumberOfLines, layout.getLineCount());
+
+          // Instead of using `layout.getWidth()` (which may yield a significantly larger width for
+          // text that is wrapping), compute width using the longest line.
+          float layoutWidth = 0;
+          if (widthMode == YogaMeasureMode.EXACTLY) {
+            layoutWidth = width;
+          } else {
+            for (int lineIndex = 0; lineIndex < lineCount; lineIndex++) {
+              float lineWidth = layout.getLineWidth(lineIndex);
+              if (lineWidth > layoutWidth) {
+                layoutWidth = lineWidth;
+              }
+            }
+            if (widthMode == YogaMeasureMode.AT_MOST && layoutWidth > width) {
+              layoutWidth = width;
+            }
           }
+
+          if (android.os.Build.VERSION.SDK_INT > android.os.Build.VERSION_CODES.Q) {
+            layoutWidth = (float) Math.ceil(layoutWidth);
+          }
+          float layoutHeight = height;
+          if (heightMode != YogaMeasureMode.EXACTLY) {
+            layoutHeight = layout.getLineBottom(lineCount - 1);
+            if (heightMode == YogaMeasureMode.AT_MOST && layoutHeight > height) {
+              layoutHeight = height;
+            }
+          }
+
+          return YogaMeasureOutput.make(layoutWidth, layoutHeight);
         }
       };
 
-  /**
-   * Return -1 if the input string is not a valid numeric fontWeight (100, 200, ..., 900), otherwise
-   * return the weight.
-   */
-  private static int parseNumericFontWeight(String fontWeightString) {
-    // This should be much faster than using regex to verify input and Integer.parseInt
-    return fontWeightString.length() == 3 && fontWeightString.endsWith("00")
-        && fontWeightString.charAt(0) <= '9' && fontWeightString.charAt(0) >= '1' ?
-        100 * (fontWeightString.charAt(0) - '0') : -1;
+  public ReactTextShadowNode() {
+    this(null);
   }
 
-  private int mLineHeight = UNSET;
-  private boolean mIsColorSet = false;
-  private int mColor;
-  private boolean mIsBackgroundColorSet = false;
-  private int mBackgroundColor;
-
-  protected int mNumberOfLines = UNSET;
-  protected int mFontSize = UNSET;
-
-  /**
-   * mFontStyle can be {@link Typeface#NORMAL} or {@link Typeface#ITALIC}.
-   * mFontWeight can be {@link Typeface#NORMAL} or {@link Typeface#BOLD}.
-   */
-  private int mFontStyle = UNSET;
-  private int mFontWeight = UNSET;
-  /**
-   * NB: If a font family is used that does not have a style in a certain Android version (ie.
-   * monospace bold pre Android 5.0), that style (ie. bold) will not be inherited by nested Text
-   * nodes. To retain that style, you have to add it to those nodes explicitly.
-   * Example, Android 4.4:
-   * <Text style={{fontFamily="serif" fontWeight="bold"}}>Bold Text</Text>
-   *   <Text style={{fontFamily="sans-serif"}}>Bold Text</Text>
-   *     <Text style={{fontFamily="serif}}>Bold Text</Text>
-   *
-   * <Text style={{fontFamily="monospace" fontWeight="bold"}}>Not Bold Text</Text>
-   *   <Text style={{fontFamily="sans-serif"}}>Not Bold Text</Text>
-   *     <Text style={{fontFamily="serif}}>Not Bold Text</Text>
-   *
-   * <Text style={{fontFamily="monospace" fontWeight="bold"}}>Not Bold Text</Text>
-   *   <Text style={{fontFamily="sans-serif" fontWeight="bold"}}>Bold Text</Text>
-   *     <Text style={{fontFamily="serif}}>Bold Text</Text>
-   */
-  private @Nullable String mFontFamily = null;
-  private @Nullable String mText = null;
-
-  private @Nullable Spanned mPreparedSpannedText;
-  private final boolean mIsVirtual;
-
-  @Override
-  public void onBeforeLayout() {
-    if (mIsVirtual) {
-      return;
-    }
-    mPreparedSpannedText = fromTextCSSNode(this);
-    markUpdated();
+  public ReactTextShadowNode(@Nullable ReactTextViewManagerCallback reactTextViewManagerCallback) {
+    super(reactTextViewManagerCallback);
+    initMeasureFunction();
   }
 
-  @Override
-  protected void markUpdated() {
-    super.markUpdated();
-    // We mark virtual anchor node as dirty as updated text needs to be re-measured
-    if (!mIsVirtual) {
-      super.dirty();
+  private void initMeasureFunction() {
+    if (!isVirtual()) {
+      setMeasureFunction(mTextMeasureFunction);
     }
   }
 
-  @ReactProp(name = PROP_TEXT)
-  public void setText(@Nullable String text) {
-    mText = text;
-    markUpdated();
-  }
+  private Layout measureSpannedText(Spannable text, float width, YogaMeasureMode widthMode) {
+    // TODO(5578671): Handle text direction (see View#getTextDirectionHeuristic)
+    TextPaint textPaint = sTextPaintInstance;
+    textPaint.setTextSize(mTextAttributes.getEffectiveFontSize());
+    Layout layout;
+    BoringLayout.Metrics boring = BoringLayout.isBoring(text, textPaint);
+    float desiredWidth = boring == null ? Layout.getDesiredWidth(text, textPaint) : Float.NaN;
 
-  @ReactProp(name = ViewProps.NUMBER_OF_LINES, defaultInt = UNSET)
-  public void setNumberOfLines(int numberOfLines) {
-    mNumberOfLines = numberOfLines;
-    markUpdated();
-  }
+    // technically, width should never be negative, but there is currently a bug in
+    boolean unconstrainedWidth = widthMode == YogaMeasureMode.UNDEFINED || width < 0;
 
-  @ReactProp(name = ViewProps.LINE_HEIGHT, defaultInt = UNSET)
-  public void setLineHeight(int lineHeight) {
-    mLineHeight = lineHeight;
-    markUpdated();
-  }
-
-  @ReactProp(name = ViewProps.FONT_SIZE, defaultFloat = UNSET)
-  public void setFontSize(float fontSize) {
-    if (fontSize != UNSET) {
-      fontSize = (float) Math.ceil(PixelUtil.toPixelFromSP(fontSize));
+    Layout.Alignment alignment = Layout.Alignment.ALIGN_NORMAL;
+    switch (getTextAlign()) {
+      case Gravity.LEFT:
+        alignment = Layout.Alignment.ALIGN_NORMAL;
+        break;
+      case Gravity.RIGHT:
+        alignment = Layout.Alignment.ALIGN_OPPOSITE;
+        break;
+      case Gravity.CENTER_HORIZONTAL:
+        alignment = Layout.Alignment.ALIGN_CENTER;
+        break;
     }
-    mFontSize = (int) fontSize;
-    markUpdated();
-  }
 
-  @ReactProp(name = ViewProps.COLOR)
-  public void setColor(@Nullable Integer color) {
-    mIsColorSet = (color != null);
-    if (mIsColorSet) {
-      mColor = color;
-    }
-    markUpdated();
-  }
+    if (boring == null
+        && (unconstrainedWidth
+            || (!YogaConstants.isUndefined(desiredWidth) && desiredWidth <= width))) {
+      // Is used when the width is not known and the text is not boring, ie. if it contains
+      // unicode characters.
 
-  @ReactProp(name = ViewProps.BACKGROUND_COLOR)
-  public void setBackgroundColor(Integer color) {
-    // Don't apply background color to anchor TextView since it will be applied on the View directly
-    if (!isVirtualAnchor()) {
-      mIsBackgroundColorSet = (color != null);
-      if (mIsBackgroundColorSet) {
-        mBackgroundColor = color;
+      int hintWidth = (int) Math.ceil(desiredWidth);
+      if (Build.VERSION.SDK_INT < Build.VERSION_CODES.M) {
+        layout =
+            new StaticLayout(text, textPaint, hintWidth, alignment, 1.f, 0.f, mIncludeFontPadding);
+      } else {
+        StaticLayout.Builder builder =
+            StaticLayout.Builder.obtain(text, 0, text.length(), textPaint, hintWidth)
+                .setAlignment(alignment)
+                .setLineSpacing(0.f, 1.f)
+                .setIncludePad(mIncludeFontPadding)
+                .setBreakStrategy(mTextBreakStrategy)
+                .setHyphenationFrequency(mHyphenationFrequency);
+
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+          builder.setJustificationMode(mJustificationMode);
+        }
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+          builder.setUseLineSpacingFromFallbacks(true);
+        }
+        layout = builder.build();
       }
-      markUpdated();
+
+    } else if (boring != null && (unconstrainedWidth || boring.width <= width)) {
+      // Is used for single-line, boring text when the width is either unknown or bigger
+      // than the width of the text.
+      layout =
+          BoringLayout.make(
+              text, textPaint, boring.width, alignment, 1.f, 0.f, boring, mIncludeFontPadding);
+    } else {
+      // Is used for multiline, boring text and the width is known.
+
+      if (Build.VERSION.SDK_INT < Build.VERSION_CODES.M) {
+        layout =
+            new StaticLayout(
+                text, textPaint, (int) width, alignment, 1.f, 0.f, mIncludeFontPadding);
+      } else {
+        StaticLayout.Builder builder =
+            StaticLayout.Builder.obtain(text, 0, text.length(), textPaint, (int) width)
+                .setAlignment(alignment)
+                .setLineSpacing(0.f, 1.f)
+                .setIncludePad(mIncludeFontPadding)
+                .setBreakStrategy(mTextBreakStrategy)
+                .setHyphenationFrequency(mHyphenationFrequency);
+
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+          builder.setUseLineSpacingFromFallbacks(true);
+        }
+        layout = builder.build();
+      }
     }
+    return layout;
   }
 
-  @ReactProp(name = ViewProps.FONT_FAMILY)
-  public void setFontFamily(@Nullable String fontFamily) {
-    mFontFamily = fontFamily;
+  // Return text alignment according to LTR or RTL style
+  private int getTextAlign() {
+    int textAlign = mTextAlign;
+    if (getLayoutDirection() == YogaDirection.RTL) {
+      if (textAlign == Gravity.RIGHT) {
+        textAlign = Gravity.LEFT;
+      } else if (textAlign == Gravity.LEFT) {
+        textAlign = Gravity.RIGHT;
+      }
+    }
+    return textAlign;
+  }
+
+  @Override
+  public void onBeforeLayout(NativeViewHierarchyOptimizer nativeViewHierarchyOptimizer) {
+    mPreparedSpannableText =
+        spannedFromShadowNode(
+            this,
+            /* text (e.g. from `value` prop): */ null,
+            /* supportsInlineViews: */ true,
+            nativeViewHierarchyOptimizer);
     markUpdated();
-  }
-
-  @ReactProp(name = ViewProps.FONT_WEIGHT)
-  public void setFontWeight(@Nullable String fontWeightString) {
-    int fontWeightNumeric = fontWeightString != null ?
-        parseNumericFontWeight(fontWeightString) : -1;
-    int fontWeight = UNSET;
-    if (fontWeightNumeric >= 500 || "bold".equals(fontWeightString)) {
-      fontWeight = Typeface.BOLD;
-    } else if ("normal".equals(fontWeightString) ||
-        (fontWeightNumeric != -1 && fontWeightNumeric < 500)) {
-      fontWeight = Typeface.NORMAL;
-    }
-    if (fontWeight != mFontWeight) {
-      mFontWeight = fontWeight;
-      markUpdated();
-    }
-  }
-
-  @ReactProp(name = ViewProps.FONT_STYLE)
-  public void setFontStyle(@Nullable String fontStyleString) {
-    int fontStyle = UNSET;
-    if ("italic".equals(fontStyleString)) {
-      fontStyle = Typeface.ITALIC;
-    } else if ("normal".equals(fontStyleString)) {
-      fontStyle = Typeface.NORMAL;
-    }
-    if (fontStyle != mFontStyle) {
-      mFontStyle = fontStyle;
-      markUpdated();
-    }
   }
 
   @Override
   public boolean isVirtualAnchor() {
-    return !mIsVirtual;
+    // Text's descendants aren't necessarily all virtual nodes. Text can contain a combination of
+    // virtual and non-virtual (e.g. inline views) nodes. Therefore it's not a virtual anchor
+    // by the doc comment on {@link ReactShadowNode#isVirtualAnchor}.
+    return false;
   }
 
   @Override
-  public boolean isVirtual() {
-    return mIsVirtual;
+  public boolean hoistNativeChildren() {
+    return true;
+  }
+
+  @Override
+  public void markUpdated() {
+    super.markUpdated();
+    // Telling to Yoga that the node should be remeasured on next layout pass.
+    super.dirty();
   }
 
   @Override
   public void onCollectExtraUpdates(UIViewOperationQueue uiViewOperationQueue) {
-    if (mIsVirtual) {
-      return;
-    }
     super.onCollectExtraUpdates(uiViewOperationQueue);
-    if (mPreparedSpannedText != null) {
-      uiViewOperationQueue.enqueueUpdateExtraData(getReactTag(), mPreparedSpannedText);
+
+    if (mPreparedSpannableText != null) {
+      ReactTextUpdate reactTextUpdate =
+          new ReactTextUpdate(
+              mPreparedSpannableText,
+              UNSET,
+              mContainsImages,
+              getPadding(Spacing.START),
+              getPadding(Spacing.TOP),
+              getPadding(Spacing.END),
+              getPadding(Spacing.BOTTOM),
+              getTextAlign(),
+              mTextBreakStrategy,
+              mJustificationMode);
+      uiViewOperationQueue.enqueueUpdateExtraData(getReactTag(), reactTextUpdate);
     }
   }
 
-  public ReactTextShadowNode(boolean isVirtual) {
-    mIsVirtual = isVirtual;
-    if (!isVirtual) {
-      setMeasureFunction(TEXT_MEASURE_FUNCTION);
+  @ReactProp(name = "onTextLayout")
+  public void setShouldNotifyOnTextLayout(boolean shouldNotifyOnTextLayout) {
+    mShouldNotifyOnTextLayout = shouldNotifyOnTextLayout;
+  }
+
+  @Override
+  public Iterable<? extends ReactShadowNode> calculateLayoutOnChildren() {
+    // Run flexbox on and return the descendants which are inline views.
+
+    if (mInlineViews == null || mInlineViews.isEmpty()) {
+      return null;
     }
+
+    Spanned text =
+        Assertions.assertNotNull(
+            this.mPreparedSpannableText,
+            "Spannable element has not been prepared in onBeforeLayout");
+    TextInlineViewPlaceholderSpan[] placeholders =
+        text.getSpans(0, text.length(), TextInlineViewPlaceholderSpan.class);
+    ArrayList<ReactShadowNode> shadowNodes = new ArrayList<ReactShadowNode>(placeholders.length);
+
+    for (TextInlineViewPlaceholderSpan placeholder : placeholders) {
+      ReactShadowNode child = mInlineViews.get(placeholder.getReactTag());
+      child.calculateLayout();
+      shadowNodes.add(child);
+    }
+
+    return shadowNodes;
   }
 }

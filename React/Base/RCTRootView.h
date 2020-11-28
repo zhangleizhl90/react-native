@@ -1,22 +1,44 @@
-/**
- * Copyright (c) 2015-present, Facebook, Inc.
- * All rights reserved.
+/*
+ * Copyright (c) Facebook, Inc. and its affiliates.
  *
- * This source code is licensed under the BSD-style license found in the
- * LICENSE file in the root directory of this source tree. An additional grant
- * of patent rights can be found in the PATENTS file in the same directory.
+ * This source code is licensed under the MIT license found in the
+ * LICENSE file in the root directory of this source tree.
  */
 
 #import <UIKit/UIKit.h>
 
-#import "RCTBridge.h"
+#import <React/RCTBridge.h>
+
+@protocol RCTRootViewDelegate;
+
+/**
+ * This enum is used to define size flexibility type of the root view.
+ * If a dimension is flexible, the view will recalculate that dimension
+ * so the content fits. Recalculations are performed when the root's frame,
+ * size flexibility mode or content size changes. After a recalculation,
+ * rootViewDidChangeIntrinsicSize method of the RCTRootViewDelegate will be called.
+ */
+typedef NS_ENUM(NSInteger, RCTRootViewSizeFlexibility) {
+  RCTRootViewSizeFlexibilityNone = 0,
+  RCTRootViewSizeFlexibilityWidth = 1 << 0,
+  RCTRootViewSizeFlexibilityHeight = 1 << 1,
+  RCTRootViewSizeFlexibilityWidthAndHeight = RCTRootViewSizeFlexibilityWidth | RCTRootViewSizeFlexibilityHeight,
+};
 
 /**
  * This notification is sent when the first subviews are added to the root view
  * after the application has loaded. This is used to hide the `loadingView`, and
  * is a good indicator that the application is ready to use.
  */
-extern NSString *const RCTContentDidAppearNotification;
+#if defined(__cplusplus)
+extern "C"
+#else
+extern
+#endif
+
+    NS_ASSUME_NONNULL_BEGIN
+
+        NSString *const RCTContentDidAppearNotification;
 
 /**
  * Native view used to host React-managed views within the app. Can be used just
@@ -30,7 +52,7 @@ extern NSString *const RCTContentDidAppearNotification;
  */
 - (instancetype)initWithBridge:(RCTBridge *)bridge
                     moduleName:(NSString *)moduleName
-             initialProperties:(NSDictionary *)initialProperties NS_DESIGNATED_INITIALIZER;
+             initialProperties:(nullable NSDictionary *)initialProperties NS_DESIGNATED_INITIALIZER;
 
 /**
  * - Convenience initializer -
@@ -41,8 +63,8 @@ extern NSString *const RCTContentDidAppearNotification;
  */
 - (instancetype)initWithBundleURL:(NSURL *)bundleURL
                        moduleName:(NSString *)moduleName
-                initialProperties:(NSDictionary *)initialProperties
-                    launchOptions:(NSDictionary *)launchOptions;
+                initialProperties:(nullable NSDictionary *)initialProperties
+                    launchOptions:(nullable NSDictionary *)launchOptions;
 
 /**
  * The name of the JavaScript module to execute within the
@@ -59,22 +81,33 @@ extern NSString *const RCTContentDidAppearNotification;
 @property (nonatomic, strong, readonly) RCTBridge *bridge;
 
 /**
- * The default properties to apply to the view when the script bundle
- * is first loaded. Defaults to nil/empty.
+ * The properties to apply to the view. Use this property to update
+ * application properties and rerender the view. Initialized with
+ * initialProperties argument of the initializer.
+ *
+ * Set this property only on the main thread.
  */
-@property (nonatomic, copy, readonly) NSDictionary *initialProperties;
+@property (nonatomic, copy, readwrite, nullable) NSDictionary *appProperties;
 
 /**
- * The class of the RCTJavaScriptExecutor to use with this view.
- * If not specified, it will default to using RCTContextExecutor.
- * Changes will take effect next time the bundle is reloaded.
+ * The size flexibility mode of the root view.
  */
-@property (nonatomic, strong) Class executorClass;
+@property (nonatomic, assign) RCTRootViewSizeFlexibility sizeFlexibility;
+
+/*
+ * The minimum size of the root view, defaults to CGSizeZero.
+ */
+@property (nonatomic, assign) CGSize minimumSize;
+
+/**
+ * The delegate that handles intrinsic size updates.
+ */
+@property (nonatomic, weak, nullable) id<RCTRootViewDelegate> delegate;
 
 /**
  * The backing view controller of the root view.
  */
-@property (nonatomic, weak) UIViewController *reactViewController;
+@property (nonatomic, weak, nullable) UIViewController *reactViewController;
 
 /**
  * The React-managed contents view of the root view.
@@ -86,7 +119,19 @@ extern NSString *const RCTContentDidAppearNotification;
  * with a blank screen. By default this is nil, but you can override it with
  * (for example) a UIActivityIndicatorView or a placeholder image.
  */
-@property (nonatomic, strong) UIView *loadingView;
+@property (nonatomic, strong, nullable) UIView *loadingView;
+
+/**
+ * When set, any touches on the RCTRootView that are not matched up to any of the child
+ * views will be passed to siblings of the RCTRootView. See -[UIView hitTest:withEvent:]
+ * for details on iOS hit testing.
+ *
+ * Enable this to support a semi-transparent RN view that occupies the whole screen but
+ * has visible content below it that the user can interact with.
+ *
+ * The default value is NO.
+ */
+@property (nonatomic, assign) BOOL passThroughTouches;
 
 /**
  * Timings for hiding the loading view after the content has loaded. Both of
@@ -96,3 +141,25 @@ extern NSString *const RCTContentDidAppearNotification;
 @property (nonatomic, assign) NSTimeInterval loadingViewFadeDuration;
 
 @end
+
+@interface RCTRootView (Deprecated)
+
+/**
+ * The intrinsic size of the root view's content. This is set right before the
+ * `rootViewDidChangeIntrinsicSize` method of `RCTRootViewDelegate` is called.
+ * This property is deprecated and will be removed in next releases.
+ * Use UIKit `intrinsicContentSize` property instead.
+ */
+@property (readonly, nonatomic, assign) CGSize intrinsicSize __deprecated_msg("Use `intrinsicContentSize` instead.");
+
+/**
+ * This methods is deprecated and will be removed soon.
+ * To interrupt a React Native gesture recognizer, use the standard
+ * `UIGestureRecognizer` negotiation process.
+ * See `UIGestureRecognizerDelegate` for more details.
+ */
+- (void)cancelTouches;
+
+@end
+
+NS_ASSUME_NONNULL_END

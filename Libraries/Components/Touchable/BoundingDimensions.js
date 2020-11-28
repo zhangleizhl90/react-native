@@ -1,12 +1,17 @@
 /**
- * @providesModule BoundingDimensions
+ * Copyright (c) Facebook, Inc. and its affiliates.
+ *
+ * This source code is licensed under the MIT license found in the
+ * LICENSE file in the root directory of this source tree.
+ *
+ * @format
  */
 
-"use strict";
+'use strict';
 
-var PooledClass = require('PooledClass');
+const PooledClass = require('./PooledClass');
 
-var twoArgumentPooler = PooledClass.twoArgumentPooler;
+const twoArgumentPooler = PooledClass.twoArgumentPooler;
 
 /**
  * PooledClass representing the bounding rectangle of a region.
@@ -20,6 +25,11 @@ function BoundingDimensions(width, height) {
   this.height = height;
 }
 
+BoundingDimensions.prototype.destructor = function() {
+  this.width = null;
+  this.height = null;
+};
+
 /**
  * @param {HTMLElement} element Element to return `BoundingDimensions` for.
  * @return {BoundingDimensions} Bounding dimensions of `element`.
@@ -27,11 +37,10 @@ function BoundingDimensions(width, height) {
 BoundingDimensions.getPooledFromElement = function(element) {
   return BoundingDimensions.getPooled(
     element.offsetWidth,
-    element.offsetHeight
+    element.offsetHeight,
   );
 };
 
 PooledClass.addPoolingTo(BoundingDimensions, twoArgumentPooler);
 
 module.exports = BoundingDimensions;
-

@@ -1,137 +1,109 @@
 /**
- * Copyright (c) 2015-present, Facebook, Inc.
- * All rights reserved.
+ * Copyright (c) Facebook, Inc. and its affiliates.
  *
- * This source code is licensed under the BSD-style license found in the
- * LICENSE file in the root directory of this source tree. An additional grant
- * of patent rights can be found in the PATENTS file in the same directory.
+ * This source code is licensed under the MIT license found in the
+ * LICENSE file in the root directory of this source tree.
  *
- * @providesModule resolveAssetSource
+ * @format
  * @flow
- *
- * Resolves an asset into a `source` for `Image`.
  */
+
+// Resolves an asset into a `source` for `Image`.
+
 'use strict';
 
-export type ResolvedAssetSource = {
-  __packager_asset: boolean,
-  width: number,
-  height: number,
-  uri: string,
-  scale: number,
-};
+const AssetRegistry = require('@react-native/assets/registry');
+const AssetSourceResolver = require('./AssetSourceResolver');
 
-var AssetRegistry = require('AssetRegistry');
-var PixelRatio = require('PixelRatio');
-var Platform = require('Platform');
-var SourceCode = require('NativeModules').SourceCode;
+import type {ResolvedAssetSource} from './AssetSourceResolver';
 
-var _serverURL;
+let _customSourceTransformer, _serverURL, _scriptURL;
 
-function getDevServerURL() {
+let _sourceCodeScriptURL: ?string;
+function getSourceCodeScriptURL(): ?string {
+  if (_sourceCodeScriptURL) {
+    return _sourceCodeScriptURL;
+  }
+
+  let sourceCode =
+    global.nativeExtensions && global.nativeExtensions.SourceCode;
+  if (!sourceCode) {
+    sourceCode = require('../NativeModules/specs/NativeSourceCode').default;
+  }
+  _sourceCodeScriptURL = sourceCode.getConstants().scriptURL;
+  return _sourceCodeScriptURL;
+}
+
+function getDevServerURL(): ?string {
   if (_serverURL === undefined) {
-    var scriptURL = SourceCode.scriptURL;
-    var match = scriptURL && scriptURL.match(/^https?:\/\/.*?\//);
+    const sourceCodeScriptURL = getSourceCodeScriptURL();
+    const match =
+      sourceCodeScriptURL && sourceCodeScriptURL.match(/^https?:\/\/.*?\//);
     if (match) {
-      // Bundle was loaded from network
+      // jsBundle was loaded from network
       _serverURL = match[0];
     } else {
-      // Bundle was loaded from file
+      // jsBundle was loaded from file
       _serverURL = null;
     }
   }
-
   return _serverURL;
 }
 
-/**
- * Returns the path at which the asset can be found in the archive
- */
-function getPathInArchive(asset) {
-  if (Platform.OS === 'android') {
-    var assetDir = getBasePath(asset);
-    // E.g. 'assets_awesomemodule_icon'
-    // The Android resource system picks the correct scale.
-    return (assetDir + '/' + asset.name)
-      .toLowerCase()
-      .replace(/\//g, '_')           // Encode folder structure in file name
-      .replace(/([^a-z0-9_])/g, '')  // Remove illegal chars
-      .replace(/^assets_/, '');      // Remove "assets_" prefix
-  } else {
-    // E.g. 'assets/AwesomeModule/icon@2x.png'
-    return getScaledAssetPath(asset);
-  }
-}
-
-/**
- * Returns an absolute URL which can be used to fetch the asset
- * from the devserver
- */
-function getPathOnDevserver(devServerUrl, asset) {
-  return devServerUrl + getScaledAssetPath(asset) + '?platform=' + Platform.OS +
-    '&hash=' + asset.hash;
-}
-
-/**
- * Returns a path like 'assets/AwesomeModule'
- */
-function getBasePath(asset) {
-  // TODO(frantic): currently httpServerLocation is used both as
-  // path in http URL and path within IPA. Should we have zipArchiveLocation?
-  var path = asset.httpServerLocation;
-  if (path[0] === '/') {
-    path = path.substr(1);
-  }
-  return path;
-}
-
-/**
- * Returns a path like 'assets/AwesomeModule/icon@2x.png'
- */
-function getScaledAssetPath(asset) {
-  var scale = pickScale(asset.scales, PixelRatio.get());
-  var scaleSuffix = scale === 1 ? '' : '@' + scale + 'x';
-  var assetDir = getBasePath(asset);
-  return assetDir + '/' + asset.name + scaleSuffix + '.' + asset.type;
-}
-
-function pickScale(scales: Array<number>, deviceScale: number): number {
-  // Packager guarantees that `scales` array is sorted
-  for (var i = 0; i < scales.length; i++) {
-    if (scales[i] >= deviceScale) {
-      return scales[i];
+function _coerceLocalScriptURL(scriptURL: ?string): ?string {
+  if (scriptURL) {
+    if (scriptURL.startsWith('assets://')) {
+      // android: running from within assets, no offline path to use
+      return null;
+    }
+    scriptURL = scriptURL.substring(0, scriptURL.lastIndexOf('/') + 1);
+    if (!scriptURL.includes('://')) {
+      // Add file protocol in case we have an absolute file path and not a URL.
+      // This shouldn't really be necessary. scriptURL should be a URL.
+      scriptURL = 'file://' + scriptURL;
     }
   }
-
-  // If nothing matches, device scale is larger than any available
-  // scales, so we return the biggest one. Unless the array is empty,
-  // in which case we default to 1
-  return scales[scales.length - 1] || 1;
+  return scriptURL;
 }
 
+function getScriptURL(): ?string {
+  if (_scriptURL === undefined) {
+    _scriptURL = _coerceLocalScriptURL(getSourceCodeScriptURL());
+  }
+  return _scriptURL;
+}
+
+function setCustomSourceTransformer(
+  transformer: (resolver: AssetSourceResolver) => ResolvedAssetSource,
+): void {
+  _customSourceTransformer = transformer;
+}
+
+/**
+ * `source` is either a number (opaque type returned by require('./foo.png'))
+ * or an `ImageSource` like { uri: '<http location || file path>' }
+ */
 function resolveAssetSource(source: any): ?ResolvedAssetSource {
   if (typeof source === 'object') {
     return source;
   }
 
-  var asset = AssetRegistry.getAssetByID(source);
-  if (asset) {
-    return assetToImageSource(asset);
+  const asset = AssetRegistry.getAssetByID(source);
+  if (!asset) {
+    return null;
   }
 
-  return null;
-}
-
-function assetToImageSource(asset): ResolvedAssetSource {
-  var devServerURL = getDevServerURL();
-  return {
-    __packager_asset: true,
-    width: asset.width,
-    height: asset.height,
-    uri: devServerURL ? getPathOnDevserver(devServerURL, asset) : getPathInArchive(asset),
-    scale: pickScale(asset.scales, PixelRatio.get()),
-  };
+  const resolver = new AssetSourceResolver(
+    getDevServerURL(),
+    getScriptURL(),
+    asset,
+  );
+  if (_customSourceTransformer) {
+    return _customSourceTransformer(resolver);
+  }
+  return resolver.defaultAsset();
 }
 
 module.exports = resolveAssetSource;
-module.exports.pickScale = pickScale;
+module.exports.pickScale = AssetSourceResolver.pickScale;
+module.exports.setCustomSourceTransformer = setCustomSourceTransformer;

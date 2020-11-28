@@ -1,224 +1,248 @@
 /**
- * Copyright (c) 2015-present, Facebook, Inc.
- * All rights reserved.
+ * Copyright (c) Facebook, Inc. and its affiliates.
  *
- * This source code is licensed under the BSD-style license found in the
- * LICENSE file in the root directory of this source tree. An additional grant
- * of patent rights can be found in the PATENTS file in the same directory.
+ * This source code is licensed under the MIT license found in the
+ * LICENSE file in the root directory of this source tree.
  *
- * @providesModule Image
  * @flow
+ * @format
  */
+
 'use strict';
 
-var EdgeInsetsPropType = require('EdgeInsetsPropType');
-var ImageResizeMode = require('ImageResizeMode');
-var ImageStylePropTypes = require('ImageStylePropTypes');
-var NativeMethodsMixin = require('NativeMethodsMixin');
-var NativeModules = require('NativeModules');
-var PropTypes = require('ReactPropTypes');
-var React = require('React');
-var ReactNativeViewAttributes = require('ReactNativeViewAttributes');
-var View = require('View');
-var StyleSheet = require('StyleSheet');
-var StyleSheetPropType = require('StyleSheetPropType');
+const DeprecatedImagePropType = require('../DeprecatedPropTypes/DeprecatedImagePropType');
+const React = require('react');
+const ReactNative = require('../Renderer/shims/ReactNative'); // eslint-disable-line no-unused-vars
+const StyleSheet = require('../StyleSheet/StyleSheet');
 
-var flattenStyle = require('flattenStyle');
-var invariant = require('invariant');
-var requireNativeComponent = require('requireNativeComponent');
-var resolveAssetSource = require('resolveAssetSource');
-var warning = require('warning');
+const ImageAnalyticsTagContext = require('./ImageAnalyticsTagContext').default;
+const flattenStyle = require('../StyleSheet/flattenStyle');
+const resolveAssetSource = require('./resolveAssetSource');
+
+import type {ImageProps as ImagePropsType} from './ImageProps';
+
+import type {ImageStyleProp} from '../StyleSheet/StyleSheet';
+import NativeImageLoaderIOS from './NativeImageLoaderIOS';
+
+import ImageViewNativeComponent from './ImageViewNativeComponent';
+
+function getSize(
+  uri: string,
+  success: (width: number, height: number) => void,
+  failure?: (error: any) => void,
+) {
+  NativeImageLoaderIOS.getSize(uri)
+    .then(([width, height]) => success(width, height))
+    .catch(
+      failure ||
+        function() {
+          console.warn('Failed to get size for image ' + uri);
+        },
+    );
+}
+
+function getSizeWithHeaders(
+  uri: string,
+  headers: {[string]: string, ...},
+  success: (width: number, height: number) => void,
+  failure?: (error: any) => void,
+): any {
+  return NativeImageLoaderIOS.getSizeWithHeaders(uri, headers)
+    .then(function(sizes) {
+      success(sizes.width, sizes.height);
+    })
+    .catch(
+      failure ||
+        function() {
+          console.warn('Failed to get size for image: ' + uri);
+        },
+    );
+}
+
+function prefetchWithMetadata(
+  url: string,
+  queryRootName: string,
+  rootTag?: ?number,
+): any {
+  if (NativeImageLoaderIOS.prefetchImageWithMetadata) {
+    // number params like rootTag cannot be nullable before TurboModules is available
+    return NativeImageLoaderIOS.prefetchImageWithMetadata(
+      url,
+      queryRootName,
+      rootTag ? rootTag : 0,
+    );
+  } else {
+    return NativeImageLoaderIOS.prefetchImage(url);
+  }
+}
+
+function prefetch(url: string): any {
+  return NativeImageLoaderIOS.prefetchImage(url);
+}
+
+async function queryCache(
+  urls: Array<string>,
+): Promise<{[string]: 'memory' | 'disk' | 'disk/memory', ...}> {
+  return await NativeImageLoaderIOS.queryCache(urls);
+}
+
+type ImageComponentStatics = $ReadOnly<{|
+  getSize: typeof getSize,
+  getSizeWithHeaders: typeof getSizeWithHeaders,
+  prefetch: typeof prefetch,
+  prefetchWithMetadata: typeof prefetchWithMetadata,
+  queryCache: typeof queryCache,
+  resolveAssetSource: typeof resolveAssetSource,
+  propTypes: typeof DeprecatedImagePropType,
+|}>;
 
 /**
  * A React component for displaying different types of images,
  * including network images, static resources, temporary local images, and
  * images from local disk, such as the camera roll.
  *
- * Example usage:
- *
- * ```
- * renderImages: function() {
- *   return (
- *     <View>
- *       <Image
- *         style={styles.icon}
- *         source={require('image!myIcon')}
- *       />
- *       <Image
- *         style={styles.logo}
- *         source={{uri: 'http://facebook.github.io/react/img/logo_og.png'}}
- *       />
- *     </View>
- *   );
- * },
- * ```
+ * See https://reactnative.dev/docs/image.html
  */
-var Image = React.createClass({
-  propTypes: {
-    style: StyleSheetPropType(ImageStylePropTypes),
-    /**
-     * `uri` is a string representing the resource identifier for the image, which
-     * could be an http address, a local file path, or the name of a static image
-     * resource (which should be wrapped in the `require('image!name')` function).
-     */
-    source: PropTypes.oneOfType([
-      PropTypes.shape({
-        uri: PropTypes.string,
-      }),
-      // Opaque type returned by require('./image.jpg')
-      PropTypes.number,
-    ]),
-    /**
-     * A static image to display while downloading the final image off the
-     * network.
-     * @platform ios
-     */
-    defaultSource: PropTypes.shape({
-      uri: PropTypes.string,
-    }),
-    /**
-     * When true, indicates the image is an accessibility element.
-     * @platform ios
-     */
-    accessible: PropTypes.bool,
-    /**
-     * The text that's read by the screen reader when the user interacts with
-     * the image.
-     * @platform ios
-     */
-    accessibilityLabel: PropTypes.string,
-    /**
-     * When the image is resized, the corners of the size specified
-     * by capInsets will stay a fixed size, but the center content and borders
-     * of the image will be stretched.  This is useful for creating resizable
-     * rounded buttons, shadows, and other resizable assets.  More info on
-     * [Apple documentation](https://developer.apple.com/library/ios/documentation/UIKit/Reference/UIImage_Class/index.html#//apple_ref/occ/instm/UIImage/resizableImageWithCapInsets)
-     * @platform ios
-     */
-    capInsets: EdgeInsetsPropType,
-    /**
-     * Determines how to resize the image when the frame doesn't match the raw
-     * image dimensions.
-     */
-    resizeMode: PropTypes.oneOf(['cover', 'contain', 'stretch']),
-    /**
-     * A unique identifier for this element to be used in UI Automation
-     * testing scripts.
-     */
-    testID: PropTypes.string,
-    /**
-     * Invoked on mount and layout changes with
-     * `{nativeEvent: {layout: {x, y, width, height}}}`.
-     */
-    onLayout: PropTypes.func,
-    /**
-     * Invoked on load start
-     * @platform ios
-     */
-    onLoadStart: PropTypes.func,
-    /**
-     * Invoked on download progress with `{nativeEvent: {loaded, total}}`
-     * @platform ios
-     */
-    onProgress: PropTypes.func,
-    /**
-     * Invoked on load error with `{nativeEvent: {error}}`
-     * @platform ios
-     */
-    onError: PropTypes.func,
-    /**
-     * Invoked when load completes successfully
-     * @platform ios
-     */
-    onLoad: PropTypes.func,
-    /**
-     * Invoked when load either succeeds or fails
-     * @platform ios
-     */
-    onLoadEnd: PropTypes.func,
-  },
+let Image = (props: ImagePropsType, forwardedRef) => {
+  const source = resolveAssetSource(props.source) || {
+    uri: undefined,
+    width: undefined,
+    height: undefined,
+  };
 
-  statics: {
-    resizeMode: ImageResizeMode,
-  },
+  let sources;
+  let style: ImageStyleProp;
+  if (Array.isArray(source)) {
+    // $FlowFixMe flattenStyle is not strong enough
+    style = flattenStyle([styles.base, props.style]) || {};
+    sources = source;
+  } else {
+    const {width, height, uri} = source;
+    // $FlowFixMe flattenStyle is not strong enough
+    style = flattenStyle([{width, height}, styles.base, props.style]) || {};
+    sources = [source];
 
-  mixins: [NativeMethodsMixin],
-
-  /**
-   * `NativeMethodsMixin` will look for this when invoking `setNativeProps`. We
-   * make `this` look like an actual native component class.
-   */
-  viewConfig: {
-    uiViewClassName: 'UIView',
-    validAttributes: ReactNativeViewAttributes.UIView
-  },
-
-  contextTypes: {
-    isInAParentText: React.PropTypes.bool
-  },
-
-  render: function() {
-    for (var prop in cfg.nativeOnly) {
-      if (this.props[prop] !== undefined) {
-        console.warn('Prop `' + prop + ' = ' + this.props[prop] + '` should ' +
-          'not be set directly on Image.');
-      }
-    }
-    var source = resolveAssetSource(this.props.source) || {};
-    var defaultSource = (this.props.defaultSource && resolveAssetSource(this.props.defaultSource)) || {};
-
-    var {width, height} = source;
-    var style = flattenStyle([{width, height}, styles.base, this.props.style]) || {};
-
-    if (source.uri === '') {
+    if (uri === '') {
       console.warn('source.uri should not be an empty string');
-      return <View {...this.props} style={style} />;
-    }
-
-    var isNetwork = source.uri && source.uri.match(/^https?:/);
-    var RawImage = isNetwork ? RCTNetworkImageView : RCTImageView;
-    var resizeMode = this.props.resizeMode || (style || {}).resizeMode || 'cover'; // Workaround for flow bug t7737108
-    var tintColor = (style || {}).tintColor; // Workaround for flow bug t7737108
-
-    // This is a workaround for #8243665. RCTNetworkImageView does not support tintColor
-    // TODO: Remove this hack once we have one image implementation #8389274
-    if (isNetwork && tintColor) {
-      RawImage = RCTImageView;
-    }
-
-    if (this.context.isInAParentText) {
-      return <RCTVirtualImage source={source}/>;
-    } else {
-      return (
-        <RawImage
-          {...this.props}
-          style={style}
-          resizeMode={resizeMode}
-          tintColor={tintColor}
-          src={source.uri}
-          defaultImageSrc={defaultSource.uri}
-        />
-      );
     }
   }
-});
 
-var styles = StyleSheet.create({
+  const resizeMode = props.resizeMode || style.resizeMode || 'cover';
+  const tintColor = style.tintColor;
+
+  if (props.src != null) {
+    console.warn(
+      'The <Image> component requires a `source` property rather than `src`.',
+    );
+  }
+
+  if (props.children != null) {
+    throw new Error(
+      'The <Image> component cannot contain children. If you want to render content on top of the image, consider using the <ImageBackground> component or absolute positioning.',
+    );
+  }
+
+  return (
+    <ImageAnalyticsTagContext.Consumer>
+      {analyticTag => {
+        return (
+          <ImageViewNativeComponent
+            {...props}
+            ref={forwardedRef}
+            style={style}
+            resizeMode={resizeMode}
+            tintColor={tintColor}
+            source={sources}
+            internal_analyticTag={analyticTag}
+          />
+        );
+      }}
+    </ImageAnalyticsTagContext.Consumer>
+  );
+};
+
+Image = React.forwardRef<
+  ImagePropsType,
+  React.ElementRef<typeof ImageViewNativeComponent>,
+>(Image);
+Image.displayName = 'Image';
+
+/**
+ * Retrieve the width and height (in pixels) of an image prior to displaying it.
+ *
+ * See https://reactnative.dev/docs/image.html#getsize
+ */
+/* $FlowFixMe(>=0.89.0 site=react_native_ios_fb) This comment suppresses an
+ * error found when Flow v0.89 was deployed. To see the error, delete this
+ * comment and run Flow. */
+Image.getSize = getSize;
+
+/**
+ * Retrieve the width and height (in pixels) of an image prior to displaying it
+ * with the ability to provide the headers for the request.
+ *
+ * See https://reactnative.dev/docs/image.html#getsizewithheaders
+ */
+/* $FlowFixMe(>=0.89.0 site=react_native_ios_fb) This comment suppresses an
+ * error found when Flow v0.89 was deployed. To see the error, delete this
+ * comment and run Flow. */
+Image.getSizeWithHeaders = getSizeWithHeaders;
+
+/**
+ * Prefetches a remote image for later use by downloading it to the disk
+ * cache.
+ *
+ * See https://reactnative.dev/docs/image.html#prefetch
+ */
+/* $FlowFixMe(>=0.89.0 site=react_native_ios_fb) This comment suppresses an
+ * error found when Flow v0.89 was deployed. To see the error, delete this
+ * comment and run Flow. */
+Image.prefetch = prefetch;
+
+/**
+ * Prefetches a remote image for later use by downloading it to the disk
+ * cache, and adds metadata for queryRootName and rootTag.
+ *
+ * See https://reactnative.dev/docs/image.html#prefetch
+ */
+/* $FlowFixMe(>=0.89.0 site=react_native_ios_fb) This comment suppresses an
+ * error found when Flow v0.89 was deployed. To see the error, delete this
+ * comment and run Flow. */
+Image.prefetchWithMetadata = prefetchWithMetadata;
+
+/**
+ * Performs cache interrogation.
+ *
+ *  See https://reactnative.dev/docs/image.html#querycache
+ */
+/* $FlowFixMe(>=0.89.0 site=react_native_ios_fb) This comment suppresses an
+ * error found when Flow v0.89 was deployed. To see the error, delete this
+ * comment and run Flow. */
+Image.queryCache = queryCache;
+
+/**
+ * Resolves an asset reference into an object.
+ *
+ * See https://reactnative.dev/docs/image.html#resolveassetsource
+ */
+/* $FlowFixMe(>=0.89.0 site=react_native_ios_fb) This comment suppresses an
+ * error found when Flow v0.89 was deployed. To see the error, delete this
+ * comment and run Flow. */
+Image.resolveAssetSource = resolveAssetSource;
+
+/* $FlowFixMe(>=0.89.0 site=react_native_ios_fb) This comment suppresses an
+ * error found when Flow v0.89 was deployed. To see the error, delete this
+ * comment and run Flow. */
+Image.propTypes = DeprecatedImagePropType;
+
+const styles = StyleSheet.create({
   base: {
     overflow: 'hidden',
   },
 });
 
-var cfg = {
-  nativeOnly: {
-    src: true,
-    defaultImageSrc: true,
-    imageTag: true,
-    progressHandlerRegistered: true,
-  },
-};
-var RCTImageView = requireNativeComponent('RCTImageView', Image, cfg);
-var RCTNetworkImageView = NativeModules.NetworkImageViewManager ? requireNativeComponent('RCTNetworkImageView', Image, cfg) : RCTImageView;
-var RCTVirtualImage = requireNativeComponent('RCTVirtualImage', Image);
-
-module.exports = Image;
+module.exports = ((Image: any): React.AbstractComponent<
+  ImagePropsType,
+  React.ElementRef<typeof ImageViewNativeComponent>,
+> &
+  ImageComponentStatics);

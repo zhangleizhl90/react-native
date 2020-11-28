@@ -1,26 +1,37 @@
 /**
- * Copyright (c) 2015-present, Facebook, Inc.
- * All rights reserved.
+ * Copyright (c) Facebook, Inc. and its affiliates.
  *
- * This source code is licensed under the BSD-style license found in the
- * LICENSE file in the root directory of this source tree. An additional grant
- * of patent rights can be found in the PATENTS file in the same directory.
+ * This source code is licensed under the MIT license found in the
+ * LICENSE file in the root directory of this source tree.
  *
- * @providesModule ToastAndroid
+ * @format
+ * @noflow
  */
+
 'use strict';
 
-var warning = require('warning');
-
-var ToastAndroid = {
-
-  show: function (
-    message: string,
-    duration: number
-  ): void {
-    warning(false, 'Cannot use ToastAndroid on iOS.');
+const ToastAndroid = {
+  show: function(message: string, duration: number): void {
+    console.warn('ToastAndroid is not supported on this platform.');
   },
 
+  showWithGravity: function(
+    message: string,
+    duration: number,
+    gravity: number,
+  ): void {
+    console.warn('ToastAndroid is not supported on this platform.');
+  },
+
+  showWithGravityAndOffset: function(
+    message: string,
+    duration: number,
+    gravity: number,
+    xOffset: number,
+    yOffset: number,
+  ): void {
+    console.warn('ToastAndroid is not supported on this platform.');
+  },
 };
 
 module.exports = ToastAndroid;

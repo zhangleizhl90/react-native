@@ -1,42 +1,61 @@
 /**
- * Copyright (c) 2015-present, Facebook, Inc.
- * All rights reserved.
+ * Copyright (c) Facebook, Inc. and its affiliates.
  *
- * This source code is licensed under the BSD-style license found in the
- * LICENSE file in the root directory of this source tree. An additional grant
- * of patent rights can be found in the PATENTS file in the same directory.
+ * This source code is licensed under the MIT license found in the
+ * LICENSE file in the root directory of this source tree.
  *
- * @providesModule processColor
+ * @format
+ * @flow strict-local
  */
+
 'use strict';
 
-var tinycolor = require('tinycolor');
-var Platform = require('Platform');
+const Platform = require('../Utilities/Platform');
+
+const normalizeColor = require('./normalizeColor');
+
+import type {ColorValue} from './StyleSheet';
+import type {NativeColorValue} from './PlatformColorValueTypes';
+
+export type ProcessedColorValue = number | NativeColorValue;
 
 /* eslint no-bitwise: 0 */
-function processColor(color) {
-  if (!color || typeof color === 'number') {
+function processColor(color?: ?(number | ColorValue)): ?ProcessedColorValue {
+  if (color === undefined || color === null) {
     return color;
-  } else if (color instanceof Array) {
-    return color.map(processColor);
-  } else {
-    var color = tinycolor(color);
-    if (color.isValid()) {
-      var rgb = color.toRgb();
-      // All bitwise operations happen on 32-bit numbers, so we shift the 1 first
-      // then multiply it with the actual value.
-      var colorInt = Math.round(rgb.a * 255) * (1 << 24) + rgb.r * (1 << 16) + rgb.g * (1 << 8) + rgb.b;
-      if (Platform.OS === 'android') {
-        // Android use 32 bit *signed* integer to represent the color
-        // We utilize the fact that bitwise operations in JS also operates on
-        // signed 32 bit integers, so that we can use those to convert from
-        // *unsiged* to *signed* 32bit int that way.
-        colorInt = colorInt | 0x0;
-      }
-      return colorInt;
-    }
-    return 0;
   }
+
+  let normalizedColor = normalizeColor(color);
+  if (normalizedColor === null || normalizedColor === undefined) {
+    return undefined;
+  }
+
+  if (typeof normalizedColor === 'object') {
+    const processColorObject = require('./PlatformColorValueTypes')
+      .processColorObject;
+
+    const processedColorObj = processColorObject(normalizedColor);
+
+    if (processedColorObj != null) {
+      return processedColorObj;
+    }
+  }
+
+  if (typeof normalizedColor !== 'number') {
+    return null;
+  }
+
+  // Converts 0xrrggbbaa into 0xaarrggbb
+  normalizedColor = ((normalizedColor << 24) | (normalizedColor >>> 8)) >>> 0;
+
+  if (Platform.OS === 'android') {
+    // Android use 32 bit *signed* integer to represent the color
+    // We utilize the fact that bitwise operations in JS also operates on
+    // signed 32 bit integers, so that we can use those to convert from
+    // *unsigned* to *signed* 32bit int that way.
+    normalizedColor = normalizedColor | 0x0;
+  }
+  return normalizedColor;
 }
 
 module.exports = processColor;

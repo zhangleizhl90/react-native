@@ -1,28 +1,44 @@
-/**
- * Copyright (c) 2015-present, Facebook, Inc.
- * All rights reserved.
+/*
+ * Copyright (c) Facebook, Inc. and its affiliates.
  *
- * This source code is licensed under the BSD-style license found in the
- * LICENSE file in the root directory of this source tree. An additional grant
- * of patent rights can be found in the PATENTS file in the same directory.
+ * This source code is licensed under the MIT license found in the
+ * LICENSE file in the root directory of this source tree.
  */
 
 package com.facebook.react.uimanager;
 
+import androidx.core.util.Pools;
 import com.facebook.react.bridge.Arguments;
 import com.facebook.react.bridge.WritableMap;
 import com.facebook.react.uimanager.events.Event;
 import com.facebook.react.uimanager.events.RCTEventEmitter;
 
-/**
- * Event used to notify JS component about changes of its position or dimensions
- */
-/* package */ class OnLayoutEvent extends Event<OnLayoutEvent> {
+/** Event used to notify JS component about changes of its position or dimensions */
+public class OnLayoutEvent extends Event<OnLayoutEvent> {
 
-  private final int mX, mY, mWidth, mHeight;
+  private static final Pools.SynchronizedPool<OnLayoutEvent> EVENTS_POOL =
+      new Pools.SynchronizedPool<>(20);
 
-  protected OnLayoutEvent(int viewTag, int x, int y, int width, int height) {
-    super(viewTag, 0);
+  private int mX, mY, mWidth, mHeight;
+
+  public static OnLayoutEvent obtain(int viewTag, int x, int y, int width, int height) {
+    OnLayoutEvent event = EVENTS_POOL.acquire();
+    if (event == null) {
+      event = new OnLayoutEvent();
+    }
+    event.init(viewTag, x, y, width, height);
+    return event;
+  }
+
+  @Override
+  public void onDispose() {
+    EVENTS_POOL.release(this);
+  }
+
+  private OnLayoutEvent() {}
+
+  protected void init(int viewTag, int x, int y, int width, int height) {
+    super.init(viewTag);
     mX = x;
     mY = y;
     mWidth = width;

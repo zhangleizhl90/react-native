@@ -1,36 +1,21 @@
 /**
- * Copyright (c) 2015-present, Facebook, Inc.
- * All rights reserved.
+ * Copyright (c) Facebook, Inc. and its affiliates.
  *
- * This source code is licensed under the BSD-style license found in the
- * LICENSE file in the root directory of this source tree. An additional grant
- * of patent rights can be found in the PATENTS file in the same directory.
+ * This source code is licensed under the MIT license found in the
+ * LICENSE file in the root directory of this source tree.
  *
- * @providesModule PixelRatio
- * @flow
+ * @format
+ * @flow strict-local
  */
+
 'use strict';
 
-var Dimensions = require('Dimensions');
+const Dimensions = require('./Dimensions');
 
 /**
  * PixelRatio class gives access to the device pixel density.
  *
- * There are a few use cases for using PixelRatio:
- *
- * ### Displaying a line that's as thin as the device permits
- *
- * A width of 1 is actually pretty thick on devices with high pixel density
- * (such as iPhone 4+ and many Android devices), we can make one that's
- * thinner using a width of `1 / PixelRatio.get()`.
- * It's a technique that works on all the devices independent of their
- * pixel density.
- *
- * ```
- * style={{ borderWidth: 1 / PixelRatio.get() }}
- * ```
- *
- * ### Fetching a correctly sized image
+ * ## Fetching a correctly sized image
  *
  * You should get a higher resolution image if you are on a high pixel density
  * device. A good rule of thumb is to multiply the size of the image you display
@@ -43,6 +28,33 @@ var Dimensions = require('Dimensions');
  * });
  * <Image source={image} style={{width: 200, height: 100}} />
  * ```
+ *
+ * ## Pixel grid snapping
+ *
+ * In iOS, you can specify positions and dimensions for elements with arbitrary
+ * precision, for example 29.674825. But, ultimately the physical display only
+ * have a fixed number of pixels, for example 640×960 for iPhone 4 or 750×1334
+ * for iPhone 6. iOS tries to be as faithful as possible to the user value by
+ * spreading one original pixel into multiple ones to trick the eye. The
+ * downside of this technique is that it makes the resulting element look
+ * blurry.
+ *
+ * In practice, we found out that developers do not want this feature and they
+ * have to work around it by doing manual rounding in order to avoid having
+ * blurry elements. In React Native, we are rounding all the pixels
+ * automatically.
+ *
+ * We have to be careful when to do this rounding. You never want to work with
+ * rounded and unrounded values at the same time as you're going to accumulate
+ * rounding errors. Having even one rounding error is deadly because a one
+ * pixel border may vanish or be twice as big.
+ *
+ * In React Native, everything in JavaScript and within the layout engine works
+ * with arbitrary precision numbers. It's only when we set the position and
+ * dimensions of the native element on the main thread that we round. Also,
+ * rounding is done relative to the root rather than the parent, again to avoid
+ * accumulating rounding errors.
+ *
  */
 class PixelRatio {
   /**
@@ -56,9 +68,15 @@ class PixelRatio {
    *     - iPhone 4, 4S
    *     - iPhone 5, 5c, 5s
    *     - iPhone 6
+   *     - iPhone 7
+   *     - iPhone 8
+   *     - iPhone SE
    *     - xhdpi Android devices (320 dpi)
    *   - PixelRatio.get() === 3
-   *     - iPhone 6 plus
+   *     - iPhone 6 Plus
+   *     - iPhone 7 Plus
+   *     - iPhone 8 Plus
+   *     - iPhone X
    *     - xxhdpi Android devices (480 dpi)
    *   - PixelRatio.get() === 3.5
    *     - Nexus 6
@@ -74,9 +92,9 @@ class PixelRatio {
    *
    * If a font scale is not set, this returns the device pixel ratio.
    *
-   * Currently this is only implemented on Android and reflects the user preference set in
-   * Settings > Display > Font size, on iOS it will always return the default pixel ratio.
-   * @platform android
+   * This reflects the user preference set in:
+   *  - Settings > Display > Font size on Android,
+   *  - Settings > Display & Brightness > Text Size on iOS.
    */
   static getFontScale(): number {
     return Dimensions.get('window').fontScale || PixelRatio.get();
@@ -89,6 +107,17 @@ class PixelRatio {
    */
   static getPixelSizeForLayoutSize(layoutSize: number): number {
     return Math.round(layoutSize * PixelRatio.get());
+  }
+
+  /**
+   * Rounds a layout size (dp) to the nearest layout size that corresponds to
+   * an integer number of pixels. For example, on a device with a PixelRatio
+   * of 3, `PixelRatio.roundToNearestPixel(8.4) = 8.33`, which corresponds to
+   * exactly (8.33 * 3) = 25 pixels.
+   */
+  static roundToNearestPixel(layoutSize: number): number {
+    const ratio = PixelRatio.get();
+    return Math.round(layoutSize * ratio) / ratio;
   }
 
   // No-op for iOS, but used on the web. Should not be documented.

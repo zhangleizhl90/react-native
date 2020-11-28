@@ -1,217 +1,159 @@
-/**
- * Copyright (c) 2015-present, Facebook, Inc.
- * All rights reserved.
+/*
+ * Copyright (c) Facebook, Inc. and its affiliates.
  *
- * This source code is licensed under the BSD-style license found in the
- * LICENSE file in the root directory of this source tree. An additional grant
- * of patent rights can be found in the PATENTS file in the same directory.
+ * This source code is licensed under the MIT license found in the
+ * LICENSE file in the root directory of this source tree.
  */
 
 package com.facebook.react.bridge;
 
-import java.io.IOException;
-import java.io.StringWriter;
+import com.facebook.infer.annotation.Assertions;
+import com.facebook.react.module.annotations.ReactModule;
+import com.facebook.systrace.Systrace;
 import java.util.ArrayList;
 import java.util.Collection;
-import java.util.HashSet;
+import java.util.List;
 import java.util.Map;
-import java.util.Set;
 
-import com.facebook.react.common.MapBuilder;
-import com.facebook.react.common.SetBuilder;
-import com.facebook.infer.annotation.Assertions;
-import com.facebook.systrace.Systrace;
-
-import com.fasterxml.jackson.core.JsonFactory;
-import com.fasterxml.jackson.core.JsonGenerator;
-
-/**
-  * A set of Java APIs to expose to a particular JavaScript instance.
-  */
+/** A set of Java APIs to expose to a particular JavaScript instance. */
 public class NativeModuleRegistry {
 
-  private final ArrayList<ModuleDefinition> mModuleTable;
-  private final Map<Class<NativeModule>, NativeModule> mModuleInstances;
-  private final String mModuleDescriptions;
-  private final ArrayList<OnBatchCompleteListener> mBatchCompleteListenerModules;
+  private final ReactApplicationContext mReactApplicationContext;
+  private final Map<String, ModuleHolder> mModules;
 
-  private NativeModuleRegistry(
-      ArrayList<ModuleDefinition> moduleTable,
-      Map<Class<NativeModule>, NativeModule> moduleInstances,
-      String moduleDescriptions) {
-    mModuleTable = moduleTable;
-    mModuleInstances = moduleInstances;
-    mModuleDescriptions = moduleDescriptions;
+  public NativeModuleRegistry(
+      ReactApplicationContext reactApplicationContext, Map<String, ModuleHolder> modules) {
+    mReactApplicationContext = reactApplicationContext;
+    mModules = modules;
+  }
 
-    mBatchCompleteListenerModules = new ArrayList<OnBatchCompleteListener>(mModuleTable.size());
-    for (int i = 0; i < mModuleTable.size(); i++) {
-      ModuleDefinition definition = mModuleTable.get(i);
-      if (definition.target instanceof OnBatchCompleteListener) {
-        mBatchCompleteListenerModules.add((OnBatchCompleteListener) definition.target);
+  /** Private getters for combining NativeModuleRegistrys */
+  private Map<String, ModuleHolder> getModuleMap() {
+    return mModules;
+  }
+
+  private ReactApplicationContext getReactApplicationContext() {
+    return mReactApplicationContext;
+  }
+
+  /* package */ Collection<JavaModuleWrapper> getJavaModules(JSInstance jsInstance) {
+    ArrayList<JavaModuleWrapper> javaModules = new ArrayList<>();
+    for (Map.Entry<String, ModuleHolder> entry : mModules.entrySet()) {
+      if (!entry.getValue().isCxxModule()) {
+        javaModules.add(new JavaModuleWrapper(jsInstance, entry.getValue()));
+      }
+    }
+    return javaModules;
+  }
+
+  /* package */ Collection<ModuleHolder> getCxxModules() {
+    ArrayList<ModuleHolder> cxxModules = new ArrayList<>();
+    for (Map.Entry<String, ModuleHolder> entry : mModules.entrySet()) {
+      if (entry.getValue().isCxxModule()) {
+        cxxModules.add(entry.getValue());
+      }
+    }
+    return cxxModules;
+  }
+
+  /*
+   * Adds any new modules to the current module registry
+   */
+  /* package */ void registerModules(NativeModuleRegistry newRegister) {
+
+    Assertions.assertCondition(
+        mReactApplicationContext.equals(newRegister.getReactApplicationContext()),
+        "Extending native modules with non-matching application contexts.");
+
+    Map<String, ModuleHolder> newModules = newRegister.getModuleMap();
+
+    for (Map.Entry<String, ModuleHolder> entry : newModules.entrySet()) {
+      String key = entry.getKey();
+      if (!mModules.containsKey(key)) {
+        ModuleHolder value = entry.getValue();
+        mModules.put(key, value);
       }
     }
   }
 
-  /* package */ void call(
-      CatalystInstance catalystInstance,
-      int moduleId,
-      int methodId,
-      ReadableNativeArray parameters) {
-    ModuleDefinition definition = mModuleTable.get(moduleId);
-    if (definition == null) {
-      throw new RuntimeException("Call to unknown module: " + moduleId);
-    }
-    definition.call(catalystInstance, methodId, parameters);
-  }
-
-  /* package */ String moduleDescriptions() {
-    return mModuleDescriptions;
-  }
-
-  /* package */ void notifyCatalystInstanceDestroy() {
-    UiThreadUtil.assertOnUiThread();
+  /* package */ void notifyJSInstanceDestroy() {
+    mReactApplicationContext.assertOnNativeModulesQueueThread();
     Systrace.beginSection(
-        Systrace.TRACE_TAG_REACT_JAVA_BRIDGE,
-        "NativeModuleRegistry_notifyCatalystInstanceDestroy");
+        Systrace.TRACE_TAG_REACT_JAVA_BRIDGE, "NativeModuleRegistry_notifyJSInstanceDestroy");
     try {
-      for (NativeModule nativeModule : mModuleInstances.values()) {
-        nativeModule.onCatalystInstanceDestroy();
+      for (ModuleHolder module : mModules.values()) {
+        module.destroy();
       }
     } finally {
       Systrace.endSection(Systrace.TRACE_TAG_REACT_JAVA_BRIDGE);
     }
   }
 
-  /* package */ void notifyCatalystInstanceInitialized() {
-    UiThreadUtil.assertOnUiThread();
-
-    ReactMarker.logMarker("NativeModule_start");
+  /* package */ void notifyJSInstanceInitialized() {
+    mReactApplicationContext.assertOnNativeModulesQueueThread(
+        "From version React Native v0.44, "
+            + "native modules are explicitly not initialized on the UI thread. See "
+            + "https://github.com/facebook/react-native/wiki/Breaking-Changes#d4611211-reactnativeandroidbreaking-move-nativemodule-initialization-off-ui-thread---aaachiuuu "
+            + " for more details.");
+    ReactMarker.logMarker(ReactMarkerConstants.NATIVE_MODULE_INITIALIZE_START);
     Systrace.beginSection(
-        Systrace.TRACE_TAG_REACT_JAVA_BRIDGE,
-        "NativeModuleRegistry_notifyCatalystInstanceInitialized");
+        Systrace.TRACE_TAG_REACT_JAVA_BRIDGE, "NativeModuleRegistry_notifyJSInstanceInitialized");
     try {
-      for (NativeModule nativeModule : mModuleInstances.values()) {
-        nativeModule.initialize();
+      for (ModuleHolder module : mModules.values()) {
+        module.markInitializable();
       }
     } finally {
       Systrace.endSection(Systrace.TRACE_TAG_REACT_JAVA_BRIDGE);
-      ReactMarker.logMarker("NativeModule_end");
+      ReactMarker.logMarker(ReactMarkerConstants.NATIVE_MODULE_INITIALIZE_END);
     }
   }
 
   public void onBatchComplete() {
-    for (int i = 0; i < mBatchCompleteListenerModules.size(); i++) {
-      mBatchCompleteListenerModules.get(i).onBatchComplete();
+    // The only native module that uses the onBatchComplete is the UI Manager. Hence, instead of
+    // iterating over all the modules for find this one instance, and then calling it, we
+    // short-circuit
+    // the search, and simply call OnBatchComplete on the UI Manager.
+    // With Fabric, UIManager would no longer be a NativeModule, so this call would simply go away
+    ModuleHolder moduleHolder = mModules.get("UIManager");
+    if (moduleHolder != null && moduleHolder.hasInstance()) {
+      ((OnBatchCompleteListener) moduleHolder.getModule()).onBatchComplete();
     }
+  }
+
+  public <T extends NativeModule> boolean hasModule(Class<T> moduleInterface) {
+    String name = moduleInterface.getAnnotation(ReactModule.class).name();
+    return mModules.containsKey(name);
   }
 
   public <T extends NativeModule> T getModule(Class<T> moduleInterface) {
-    return (T) Assertions.assertNotNull(mModuleInstances.get(moduleInterface));
+    ReactModule annotation = moduleInterface.getAnnotation(ReactModule.class);
+    if (annotation == null) {
+      throw new IllegalArgumentException(
+          "Could not find @ReactModule annotation in class " + moduleInterface.getName());
+    }
+    return (T)
+        Assertions.assertNotNull(
+                mModules.get(annotation.name()),
+                annotation.name()
+                    + " could not be found. Is it defined in "
+                    + moduleInterface.getName())
+            .getModule();
   }
 
-  public Collection<NativeModule> getAllModules() {
-    return mModuleInstances.values();
+  public boolean hasModule(String name) {
+    return mModules.containsKey(name);
   }
 
-  private static class ModuleDefinition {
-    public final int id;
-    public final String name;
-    public final NativeModule target;
-    public final ArrayList<MethodRegistration> methods;
-
-    public ModuleDefinition(int id, String name, NativeModule target) {
-      this.id = id;
-      this.name = name;
-      this.target = target;
-      this.methods = new ArrayList<MethodRegistration>();
-
-      for (Map.Entry<String, NativeModule.NativeMethod> entry : target.getMethods().entrySet()) {
-        this.methods.add(
-          new MethodRegistration(
-            entry.getKey(), "NativeCall__" + target.getName() + "_" + entry.getKey(),
-            entry.getValue()));
-      }
-    }
-
-    public void call(
-        CatalystInstance catalystInstance,
-        int methodId,
-        ReadableNativeArray parameters) {
-      MethodRegistration method = this.methods.get(methodId);
-      Systrace.beginSection(Systrace.TRACE_TAG_REACT_JAVA_BRIDGE, method.tracingName);
-      try {
-        this.methods.get(methodId).method.invoke(catalystInstance, parameters);
-      } finally {
-        Systrace.endSection(Systrace.TRACE_TAG_REACT_JAVA_BRIDGE);
-      }
-    }
+  public NativeModule getModule(String name) {
+    return Assertions.assertNotNull(mModules.get(name), "Could not find module with name " + name)
+        .getModule();
   }
 
-  private static class MethodRegistration {
-    public MethodRegistration(String name, String tracingName, NativeModule.NativeMethod method) {
-      this.name = name;
-      this.tracingName = tracingName;
-      this.method = method;
+  public List<NativeModule> getAllModules() {
+    List<NativeModule> modules = new ArrayList<>();
+    for (ModuleHolder module : mModules.values()) {
+      modules.add(module.getModule());
     }
-
-    public String name;
-    public String tracingName;
-    public NativeModule.NativeMethod method;
-  }
-
-  public static class Builder {
-
-    private ArrayList<ModuleDefinition> mModuleDefinitions;
-    private Map<Class<NativeModule>, NativeModule> mModuleInstances;
-    private Set<String> mSeenModuleNames;
-
-    public Builder() {
-      mModuleDefinitions = new ArrayList<ModuleDefinition>();
-      mModuleInstances = MapBuilder.newHashMap();
-      mSeenModuleNames = SetBuilder.newHashSet();
-    }
-
-    public Builder add(NativeModule module) {
-      ModuleDefinition registration = new ModuleDefinition(
-          mModuleDefinitions.size(),
-          module.getName(),
-          module);
-      Assertions.assertCondition(
-          !mSeenModuleNames.contains(module.getName()),
-          "Module " + module.getName() + " was already registered!");
-      mSeenModuleNames.add(module.getName());
-      mModuleDefinitions.add(registration);
-      mModuleInstances.put((Class<NativeModule>) module.getClass(), module);
-      return this;
-    }
-
-    public NativeModuleRegistry build() {
-      JsonFactory jsonFactory = new JsonFactory();
-      StringWriter writer = new StringWriter();
-      try {
-        JsonGenerator jg = jsonFactory.createGenerator(writer);
-        jg.writeStartObject();
-        for (ModuleDefinition module : mModuleDefinitions) {
-          jg.writeObjectFieldStart(module.name);
-          jg.writeNumberField("moduleID", module.id);
-          jg.writeObjectFieldStart("methods");
-          for (int i = 0; i < module.methods.size(); i++) {
-            MethodRegistration method = module.methods.get(i);
-            jg.writeObjectFieldStart(method.name);
-            jg.writeNumberField("methodID", i);
-            jg.writeEndObject();
-          }
-          jg.writeEndObject();
-          module.target.writeConstantsField(jg, "constants");
-          jg.writeEndObject();
-        }
-        jg.writeEndObject();
-        jg.close();
-      } catch (IOException ioe) {
-        throw new RuntimeException("Unable to serialize Java module configuration", ioe);
-      }
-      String moduleDefinitionJson = writer.getBuffer().toString();
-      return new NativeModuleRegistry(mModuleDefinitions, mModuleInstances, moduleDefinitionJson);
-    }
+    return modules;
   }
 }

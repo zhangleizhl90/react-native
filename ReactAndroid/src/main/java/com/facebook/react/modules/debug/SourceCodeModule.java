@@ -1,54 +1,46 @@
-/**
- * Copyright (c) 2015-present, Facebook, Inc.
- * All rights reserved.
+/*
+ * Copyright (c) Facebook, Inc. and its affiliates.
  *
- * This source code is licensed under the BSD-style license found in the
- * LICENSE file in the root directory of this source tree. An additional grant
- * of patent rights can be found in the PATENTS file in the same directory.
+ * This source code is licensed under the MIT license found in the
+ * LICENSE file in the root directory of this source tree.
  */
 
 package com.facebook.react.modules.debug;
 
-import javax.annotation.Nullable;
-
+import com.facebook.fbreact.specs.NativeSourceCodeSpec;
+import com.facebook.infer.annotation.Assertions;
+import com.facebook.react.bridge.ReactApplicationContext;
+import com.facebook.react.module.annotations.ReactModule;
 import java.util.HashMap;
 import java.util.Map;
-
-import com.facebook.react.bridge.Callback;
-import com.facebook.react.bridge.BaseJavaModule;
-import com.facebook.react.bridge.ReactMethod;
-import com.facebook.react.bridge.WritableMap;
-import com.facebook.react.bridge.WritableNativeMap;
 
 /**
  * Module that exposes the URL to the source code map (used for exception stack trace parsing) to JS
  */
-public class SourceCodeModule extends BaseJavaModule {
+@ReactModule(name = SourceCodeModule.NAME)
+public class SourceCodeModule extends NativeSourceCodeSpec {
 
-  private final String mSourceMapUrl;
-  private final String mSourceUrl;
+  public static final String NAME = "SourceCode";
 
-  public SourceCodeModule(String sourceUrl, String sourceMapUrl) {
-    mSourceMapUrl = sourceMapUrl;
-    mSourceUrl = sourceUrl;
+  public SourceCodeModule(ReactApplicationContext reactContext) {
+    super(reactContext);
   }
 
   @Override
   public String getName() {
-    return "RKSourceCode";
-  }
-
-  @ReactMethod
-  public void getScriptText(final Callback onSuccess, final Callback onError) {
-    WritableMap map = new WritableNativeMap();
-    map.putString("fullSourceMappingURL", mSourceMapUrl);
-    onSuccess.invoke(map);
+    return NAME;
   }
 
   @Override
-  public @Nullable Map<String, Object> getConstants() {
-    HashMap<String, Object> constants = new HashMap<String, Object>();
-    constants.put("scriptURL", mSourceUrl);
+  protected Map<String, Object> getTypedExportedConstants() {
+    HashMap<String, Object> constants = new HashMap<>();
+
+    String sourceURL =
+        Assertions.assertNotNull(
+            getReactApplicationContext().getSourceURL(),
+            "No source URL loaded, have you initialised the instance?");
+
+    constants.put("scriptURL", sourceURL);
     return constants;
   }
 }
